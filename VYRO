@@ -1,0 +1,214 @@
+#!/usr/bin/env node
+
+/**
+ * Nexora
+ * -------
+ * A lightweight API health monitor for developers.
+ *
+ * Features:
+ * - Check API availability
+ * - Measure response latency
+ * - Display HTTP status codes
+ * - Monitor multiple endpoints
+ * - Clean terminal output
+ *
+ * Usage:
+ *   node nexora.js https://example.com
+ *
+ * Requirements:
+ *   Node.js 18+
+ */
+
+const https = require("https");
+const http = require("http");
+const { URL } = require("url");
+
+const VERSION = "1.0.0";
+
+const RESET = "\x1b[0m";
+const CYAN = "\x1b[36m";
+const GREEN = "\x1b[32m";
+const RED = "\x1b[31m";
+const YELLOW = "\x1b[33m";
+const DIM = "\x1b[2m";
+const BOLD = "\x1b[1m";
+
+function printBanner() {
+  console.log(`
+${CYAN}${BOLD}
+ _   _ _______  __
+| \\ | | ____\\ \\/ /
+|  \\| |  _|  \\  /
+| |\\  | |___  /  \\
+|_| \\_|_____|/_/\\_\\
+${RESET}
+${DIM}Fast API health monitoring for developers${RESET}
+`);
+}
+
+function request(urlString) {
+  return new Promise((resolve, reject) => {
+    let parsed;
+
+    try {
+      parsed = new URL(urlString);
+    } catch {
+      reject(new Error("Invalid URL"));
+      return;
+    }
+
+    const client = parsed.protocol === "https:" ? https : http;
+
+    const start = performance.now();
+
+    const req = client.request(
+      parsed,
+      {
+        method: "GET",
+        timeout: 10000,
+        headers: {
+          "User-Agent": "Nexora/1.0",
+          Accept: "application/json,text/plain,*/*"
+        }
+      },
+      (res) => {
+        const latency = Math.round(performance.now() - start);
+
+        res.on("data", () => {});
+        res.on("end", () => {
+          resolve({
+            url: urlString,
+            status: res.statusCode,
+            latency,
+            healthy: res.statusCode >= 200 && res.statusCode < 400
+          });
+        });
+      }
+    );
+
+    req.on("timeout", () => {
+      req.destroy(new Error("Request timed out"));
+    });
+
+    req.on("error", reject);
+
+    req.end();
+  });
+}
+
+function formatLatency(ms) {
+  if (ms < 200) {
+    return `${GREEN}${ms}ms${RESET}`;
+  }
+
+  if (ms < 500) {
+    return `${YELLOW}${ms}ms${RESET}`;
+  }
+
+  return `${RED}${ms}ms${RESET}`;
+}
+
+function formatStatus(status) {
+  if (status >= 200 && status < 300) {
+    return `${GREEN}${status}${RESET}`;
+  }
+
+  if (status >= 300 && status < 400) {
+    return `${YELLOW}${status}${RESET}`;
+  }
+
+  return `${RED}${status}${RESET}`;
+}
+
+async function checkEndpoint(url) {
+  try {
+    const result = await request(url);
+
+    const icon = result.healthy
+      ? `${GREEN}●${RESET}`
+      : `${RED}●${RESET}`;
+
+    console.log(
+      `${icon} ${result.url}\n` +
+      `  Status:  ${formatStatus(result.status)}\n` +
+      `  Latency: ${formatLatency(result.latency)}\n`
+    );
+
+    return result;
+  } catch (error) {
+    console.log(
+      `${RED}●${RESET} ${url}\n` +
+      `  Status:  ${RED}OFFLINE${RESET}\n` +
+      `  Error:   ${error.message}\n`
+    );
+
+    return {
+      url,
+      healthy: false
+    };
+  }
+}
+
+async function main() {
+  const args = process.argv.slice(2);
+
+  if (args.includes("--version") || args.includes("-v")) {
+    console.log(`Nexora v${VERSION}`);
+    return;
+  }
+
+  if (args.includes("--help") || args.includes("-h") || args.length === 0) {
+    console.log(`
+${BOLD}Nexora${RESET} — API health monitor
+
+Usage:
+  nexora <url> [url2] [url3...]
+
+Options:
+  -h, --help       Show help
+  -v, --version    Show version
+
+Examples:
+  nexora https://example.com
+
+  nexora https://api.github.com https://example.org
+`);
+    return;
+  }
+
+  printBanner();
+
+  const urls = args.filter((arg) => !arg.startsWith("-"));
+
+  console.log(
+    `${DIM}Checking ${urls.length} endpoint${
+      urls.length === 1 ? "" : "s"
+    }...${RESET}\n`
+  );
+
+  const results = [];
+
+  for (const url of urls) {
+    const result = await checkEndpoint(url);
+    results.push(result);
+  }
+
+  const healthy = results.filter((item) => item.healthy).length;
+  const failed = results.length - healthy;
+
+  console.log(`${DIM}${"─".repeat(45)}${RESET}`);
+
+  console.log(
+    `${BOLD}Summary${RESET}\n` +
+    `${GREEN}Healthy:${RESET} ${healthy}   ` +
+    `${RED}Failed:${RESET} ${failed}   ` +
+    `${DIM}Total:${RESET} ${results.length}`
+  );
+
+  process.exitCode = failed > 0 ? 1 : 0;
+}
+
+main().catch((error) => {
+  console.error(`${RED}Fatal error:${RESET}`, error.message);
+  process.exitCode = 1;
+});
